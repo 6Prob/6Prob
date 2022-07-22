@@ -67,12 +67,12 @@ go run main.go -h
 ```
 6prob -module=getPfx -input=<input file> -output=<output file> -thres=<# hosts>
 ```
-> Module `getPfx` get prefixes with more than thres hosts presented in the input file and output results to output file.
+> Module `getPfx` gets prefixes with more than thres hosts presented in the input file and output results to output file.
 
 ```
 6prob -module=genAlias -input=<input file> -output=<output file> -thres=<threshold distance>
 ```
-> Module `genAlias` generate new alias prefixes based on ones in the input file with the threshold distance.
+> Module `genAlias` generates new alias prefixes based on ones in the input file with the threshold distance.
 
 
 
