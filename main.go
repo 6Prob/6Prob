@@ -286,11 +286,11 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 				newAddrStr := pTree.Generate()
 				if !aliasTree.IsAlias(net.ParseIP(newAddrStr)) {
 					pp.Add(newAddrStr)
-				}
-				endTime := time.Now().UnixMicro()
-				usedTime := endTime - startTime
-				if usedTime < genInterval {
-					time.Sleep(time.Duration(genInterval - usedTime) * time.Microsecond)
+					endTime := time.Now().UnixMicro()
+					usedTime := endTime - startTime
+					if usedTime < genInterval {
+						time.Sleep(time.Duration(genInterval - usedTime) * time.Microsecond)
+					}
 				}
 			}
 		}()
@@ -305,7 +305,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 	}
 }
 
-func detAlias(sourceIP, inputFile, outputFile string, nProc, nScanProc int) {
+func detAlias(sourceIP, inputFile, outputFile string, nScanProc int) {
 	nowTime := time.Now().UnixNano()
 	fmt.Printf("Seed is %d\n", nowTime)
 	rand.Seed(nowTime)
@@ -578,7 +578,7 @@ func main() {
 	case "gen":
 		gen(*sourceIP, *inputFile, *outputFile, *aliasFile, *nProc, *nScanProc, *budget, *dealias)
 	case "detAlias":
-		detAlias(*sourceIP, *inputFile, *outputFile, *nProc, *nScanProc)
+		detAlias(*sourceIP, *inputFile, *outputFile, *nScanProc)
 	case "dealiasScan":
 		dealiasScan(*sourceIP, *inputFile, *outputFile, *aliasFile, *nScanProc)
 	case "6gen":
