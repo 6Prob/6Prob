@@ -417,6 +417,10 @@ func (pTree *ProbTree) Generate() string {
 		nextEntry := utils.RandBranchFloat(probs)
 		remain.Del(nowNode.divide)
 		newAddr.Set(nowNode.divide, nextEntry)
+		// fmt.Println(remain.GetAll(), newAddr.ToIPv6())
+		if len(remain.GetAll()) == 0 {
+			break
+		}
 		// 3. recursion
 		child := nowNode.children.IndexAt(nextEntry)
 		if child == nil {
