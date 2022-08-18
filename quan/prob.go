@@ -329,7 +329,7 @@ func (pNode *ProbNode) finishCheck(pTree *ProbTree) bool {
 		}
 	}
 	pathLen := pNode.path.Len()
-	if pathLen > 0 {  // this node is compressed, release the left-most dimension
+	if pathLen > 0 {  // this node is compressed, release the right-most dimension
 		val := pNode.path.Back()
 		pNode.path = pNode.path.Slice(0, pathLen - 1)
 		pNode.divide = pNode.indices.Pop()
@@ -339,6 +339,19 @@ func (pNode *ProbNode) finishCheck(pTree *ProbTree) bool {
 	} else {  // this node is probed
 		return true
 	}
+}
+
+func (pNode *ProbNode) recCheck(nDim int, pTree *ProbTree) bool {
+	nowNDim := nDim - int(pNode.path.Len()) - 1
+	if nowNDim < 0 {
+		return false
+	}
+	for _, child := range pNode.children.ActiveRange(pTree) {
+		if !child.recCheck(nowNDim, pTree) {
+			return false
+		}
+	}
+	return true
 }
 
 func (pTree *ProbTree) finishCheckPath(nodesOnPath []*ProbNode) []*ProbNode {
@@ -417,9 +430,6 @@ func (pTree *ProbTree) Generate() string {
 		nextEntry := utils.RandBranchFloat(probs)
 		remain.Del(nowNode.divide)
 		newAddr.Set(nowNode.divide, nextEntry)
-		if len(remain.GetAll()) == 0 {
-			break
-		}
 		// 3. recursion
 		child := nowNode.children.IndexAt(nextEntry)
 		if child == nil {
@@ -508,8 +518,12 @@ func (pTree *ProbTree) recInit(addrs []utils.BitsArray, remain utils.Indices32) 
 			}
 		}
 	}
-	nowNode.nProbes = uint32(len(addrs))
-	return nowNode
+	if nowNode.finishCheck(pTree) {
+		return pTree.finishNode
+	} else {
+		nowNode.nProbes = uint32(len(addrs))
+		return nowNode
+	}
 }
 
 func (pTree *ProbTree) Init(ipStrArray []string) {
@@ -524,6 +538,7 @@ func (pTree *ProbTree) Init(ipStrArray []string) {
 	// all uni-cast IPv6 starts with 2
 	pTree.rootNode.children.Set(2, pTree.recInit(addrs, remain))
 	pTree.rootNode.nProbes = uint32(len(ipStrArray))
+	// do the finish check
 }
 
 func (pTree *ProbTree) PrintInfo() {
@@ -541,4 +556,8 @@ func (pTree *ProbTree) PrintInfo() {
 
 func (pTree *ProbTree) GetEstimation() float32 {
 	return pTree.rootNode.q * 100
+}
+
+func (pTree *ProbTree) Check() bool {
+	return pTree.rootNode.recCheck(32, pTree)
 }
