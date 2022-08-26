@@ -47,9 +47,11 @@ go run main.go -h
 > Module `filAlias` is used to filter addresses in the input file with alias prefixes in the alias file and output results to the output file.
 
 ```
-6prob -module=gen -input=<input file> -output=<output file> -alias=<alias file> -budget=<# generated addresses> [-source-ip=<source IP> -n-proc=<# processes for generating and updating> -n-scan-proc=<# scan processes>]
+6prob -module=gen -input=<input file> -output=<output file> -alias=<alias file> -budget=<# generated addresses> -out-alias=<alias output file> [-source-ip=<source IP> -n-proc=<# processes for generating and updating> -n-scan-proc=<# scan processes>]
 ```
 > Module `gen` uses 6Prob model to generate new addresses based on addresses in the input file. Alias file is used to prevent model generating alias addresses. Budget is the number of generated addresses you want.
+
+> 6Prob need input file (often active addresses in the IPv6 Hitlist) as heuristics. During the generation, it avoids generating alias addresses by filtering generated addresses by alias file and performing Real-time APD. The newly-detected alias prefixes from Real-time APD is exported to alias output file.
 
 ```
 6prob -module=detAlias -input=<input file> -output=<output file> [-source-ip=<source IP> -n-scan-proc=<# scan processes>]

@@ -12,6 +12,9 @@ import (
 	"os"
 	"sort"
 	"time"
+	"strings"
+	"strconv"
+	"sync"
 )
 
 const (
@@ -25,6 +28,7 @@ var (
 	nProc = flag.Int("n-proc", 1, "# thread used in 6Prob generation")
 	budget = flag.Int("budget", 1000000, "# probe used in 6Prob generation")
 	aliasFile = flag.String("alias", "data/2022-04-07-aliased.txt", "Detected alias prefixes")
+	outAliasFile = flag.String("out-alias", "", "Output path for newly-detected alias prefixes during scanning of 6Prob")
 	sourceIP  = flag.String("source-ip", "", "The source IP used for scanning")
 	nScanProc = flag.Int("n-scan-proc", 8, "# thread used for sending ICMP request message")
 	dealias = flag.Bool("dealias", true, "whether dealias during 6Prob generation")
@@ -161,7 +165,8 @@ func filAlias(inputFile, aliasFile, outputFile string) {
 	utils.SaveAddr6ToFS(outputFile, deaStrArray)
 }
 
-func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, budget int, dealias bool) {
+func gen(sourceIP, inputFile, outputFile, aliasFile, outAliasFile string, nProc, nScanProc, budget int, dealias bool) {
+	fmt.Println("New Version")
 	genInterval := 1000000 / rate
 	startTime := time.Now().Unix()
 	fmt.Printf("Seed is %d\n", startTime)
@@ -175,6 +180,9 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 	aliasOutFile := outputFile[:len(outputFile) - 4] + "-alias.txt"
 	os.Remove(aliasOutFile)
 	os.Remove(outputFile)
+	if outAliasFile != "" {
+		os.Remove(outAliasFile)
+	}
 
 	// init alias tree
 	fmt.Println("Loading alias prefixes...")
@@ -191,11 +199,16 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 
 	// start probing goroutines
 	pp := scanner.NewPingPool(100000000, nScanProc, sourceIP)
+	realtimeAPD := quan.NewSimpleAliasDetector(100000, sourceIP)
 	go pp.Run()
+	go realtimeAPD.Run()
 	nActive := 0
 	nProbe := 0
 	nMayBeAlias := 0
 	nAlias := 0
+	detectedPfx := sync.Map{}
+	aliasDict := sync.Map{}
+	// aliasDict := make(map[string][][]*quan.ProbNode)
 
 	// start statistics and save goroutine
 	before := 0
@@ -211,14 +224,13 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 			}
 			time.Sleep(time.Second)
 			activeRatio := float64(nActive) / float64(nProbe) * 100
-			aliasRatio := float64(nAlias) / float64(nMayBeAlias) * 100
 			nowTime := time.Now().Unix()
 			second := nowTime - startTime
 			hour := second / 3600
 			second %= 3600
 			minute := second / 60
 			second %= 60
-			fmt.Printf("\r[%02d:%02d:%02d] %d addresses generated. Now active ratio %.2f%%(%.2f%%). Now alias ratio %.2f%%...", hour, minute, second, nProbe, activeRatio, pTree.GetEstimation(), aliasRatio)
+			fmt.Printf("\r[%02d:%02d:%02d] %d addresses generated. Now active ratio %.2f%%(%.2f%%). Now alias ratio %d/%d...", hour, minute, second, nProbe, activeRatio, pTree.GetEstimation(), nAlias, nMayBeAlias)
 			// pTree.PrintInfo()
 			after := nProbe % 10000000
 			if after < before {
@@ -260,6 +272,28 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 
 	pTree.PrintInfo()
 
+	// realtime apd goroutine
+	go func(){
+		for {
+			pfxStr, isAlias := realtimeAPD.Get()
+			detectedPfx.Store(pfxStr, isAlias)
+			if isAlias {
+				nAlias ++
+			}
+			prefixLen, _ := strconv.Atoi(strings.Split(pfxStr, "/")[1])
+			paths, _ := aliasDict.Load(pfxStr)
+			aliasDict.Delete(pfxStr)
+			for _, nodesOnPath := range paths.([][]*quan.ProbNode) {
+				pTree.AddAlias(nodesOnPath, isAlias, uint8(prefixLen))
+			}
+			if outAliasFile != "" {
+				if isAlias {
+					utils.Append1Addr6ToFS(outAliasFile, pfxStr)
+				}
+			}
+		}
+	}()
+
 	// response goroutines
 	for i := 0; i < nProc; i ++ {
 		go func(){
@@ -283,8 +317,24 @@ func gen(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, bu
 					break
 				}
 				nProbe ++
-				newAddrStr := pTree.Generate()
-				if !aliasTree.IsAlias(net.ParseIP(newAddrStr)) {
+				newAddrStr, nodesOnPath := pTree.Generate()
+				if find := strings.Contains(newAddrStr, "/"); find {
+					if isAlias, ok := detectedPfx.Load(newAddrStr); ok {
+						prefixLen, _ := strconv.Atoi(strings.Split(newAddrStr, "/")[1])
+						pTree.AddAlias(nodesOnPath, isAlias.(bool), uint8(prefixLen))
+					} else {
+						paths, ok := aliasDict.Load(newAddrStr)
+						if !ok {
+							realtimeAPD.Add(newAddrStr)
+							nMayBeAlias ++
+							newPaths := make([][]*quan.ProbNode, 1)
+							newPaths[0] = nodesOnPath
+							aliasDict.Store(newAddrStr, newPaths)
+						} else {
+							aliasDict.Store(newAddrStr, append(paths.([][]*quan.ProbNode), nodesOnPath))
+						}
+					}
+				} else if !aliasTree.IsAlias(net.ParseIP(newAddrStr)) {
 					pp.Add(newAddrStr)
 					endTime := time.Now().UnixMicro()
 					usedTime := endTime - startTime
@@ -576,7 +626,7 @@ func main() {
 	case "filAlias":
 		filAlias(*inputFile, *aliasFile, *outputFile)
 	case "gen":
-		gen(*sourceIP, *inputFile, *outputFile, *aliasFile, *nProc, *nScanProc, *budget, *dealias)
+		gen(*sourceIP, *inputFile, *outputFile, *aliasFile, *outAliasFile, *nProc, *nScanProc, *budget, *dealias)
 	case "detAlias":
 		detAlias(*sourceIP, *inputFile, *outputFile, *nScanProc)
 	case "dealiasScan":

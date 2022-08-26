@@ -198,6 +198,8 @@ type ProbNode struct {
 	children ProbChildren
 	path utils.BitsArray
 	indices utils.Indices32
+	mayBeAlias bool
+	underAPD bool
 	mutex *sync.Mutex
 }
 
@@ -206,7 +208,7 @@ type ProbTree struct {
 	finishNode *ProbNode
 }
 
-func NewProbNode(path utils.BitsArray, indices utils.Indices32, divide uint8) *ProbNode {
+func NewProbNode(path utils.BitsArray, indices utils.Indices32, divide uint8, mayBeAlias bool) *ProbNode {
 	return &ProbNode{
 		a: 0,
 		q: 0,
@@ -220,13 +222,15 @@ func NewProbNode(path utils.BitsArray, indices utils.Indices32, divide uint8) *P
 		},
 		path: path,
 		indices: indices,
+		mayBeAlias: mayBeAlias,
+		underAPD: false,
 		mutex: &sync.Mutex{},
 	}
 }
 
-func NewLeafProbNode(path utils.BitsArray, indices utils.Indices32, pTree *ProbTree) *ProbNode {
+func NewLeafProbNode(path utils.BitsArray, indices utils.Indices32, pTree *ProbTree, mayBeAlias bool) *ProbNode {
 	divide := indices.Pop()
-	leafNode := NewProbNode(path.Slice(0, path.Len() - 1), indices, divide)
+	leafNode := NewProbNode(path.Slice(0, path.Len() - 1), indices, divide, mayBeAlias)
 	leafVal := path.Back()
 	leafNode.children.Set(leafVal, pTree.finishNode)
 	return leafNode
@@ -234,8 +238,8 @@ func NewLeafProbNode(path utils.BitsArray, indices utils.Indices32, pTree *ProbT
 
 func NewProbTree() *ProbTree {
 	return &ProbTree{
-		rootNode: NewProbNode(utils.NilSlice(), 0, 0),
-		finishNode: NewProbNode(utils.NilSlice(), 0, 0),
+		rootNode: NewProbNode(utils.NilSlice(), 0, 0, false),
+		finishNode: NewProbNode(utils.NilSlice(), 0, 0, false),
 	}
 }
 
@@ -354,6 +358,14 @@ func (pNode *ProbNode) recCheck(nDim int, pTree *ProbTree) bool {
 	return true
 }
 
+func (pNode *ProbNode) AliasCheck() bool {
+	if pNode.nProbes >= 20 && pNode.nActive >= pNode.nProbes * 8 / 10 {
+		return true
+	} else {
+		return false
+	}
+}
+
 func (pTree *ProbTree) finishCheckPath(nodesOnPath []*ProbNode) []*ProbNode {
 	/*
      * Check whether the nodes on path are finished.
@@ -409,7 +421,7 @@ func (pTree *ProbTree) AddActive(addr net.IP) {
 	pTree.calculatePath(nodesOnPath)
 }
 
-func (pTree *ProbTree) Generate() string {
+func (pTree *ProbTree) Generate() (string, []*ProbNode) {
 	// Generate a prob IPv6 from the tree.
 	newAddr := utils.NewBitsArray(32, make([]byte, 16))
 	nowNode := pTree.rootNode
@@ -417,6 +429,24 @@ func (pTree *ProbTree) Generate() string {
 	nodesOnPath[0] = nowNode
 	remain := utils.Indices32(0xffffffff)
 	for {
+		// 0. alias check
+		if nowNode.underAPD {
+			newAddr = utils.NewBitsArray(32, make([]byte, 16))
+			nowNode = pTree.rootNode
+			nodesOnPath = nodesOnPath[:1]
+			remain = utils.Indices32(0xffffffff)
+			continue
+		}
+		if nowNode.mayBeAlias && nowNode.AliasCheck() {
+			prefixBits := utils.NilSlice()
+			for i := uint8(0); !remain.Has(i); i ++ {
+				prefixBits.Append(newAddr.IndexAt(i))
+			}
+			nowNode.a = 0
+			nowNode.q = 0
+			pTree.calculatePath(nodesOnPath[:len(nodesOnPath) - 1])
+			return prefixBits.ToPrefix6(), nodesOnPath
+		}
 		// 1. fill the path
 		indexArray := nowNode.indices.GetAll()
 		remain.DelBatch(nowNode.indices)
@@ -444,7 +474,7 @@ func (pTree *ProbTree) Generate() string {
 					pos := remainArray[i]
 					newAddr.Set(pos, val)
 				}
-				newLeaf := NewLeafProbNode(newBits, remain, pTree)
+				newLeaf := NewLeafProbNode(newBits, remain, pTree, true)
 				nowNode.children.Set(nextEntry, newLeaf)
 				nodesOnPath = append(nodesOnPath, newLeaf)
 			}
@@ -459,7 +489,7 @@ func (pTree *ProbTree) Generate() string {
 	}
 	nodesOnPath = pTree.finishCheckPath(nodesOnPath)
 	pTree.calculatePath(nodesOnPath)
-	return newAddr.ToIPv6()
+	return newAddr.ToIPv6(), nodesOnPath
 }
 
 func (pTree *ProbTree) recInit(addrs []utils.BitsArray, remain utils.Indices32) *ProbNode {
@@ -498,11 +528,11 @@ func (pTree *ProbTree) recInit(addrs []utils.BitsArray, remain utils.Indices32) 
 			fmt.Println(fixedIndices, fixedDimension, remainArray, entropy[0])
 		}
 		minDimension = fixedIndices.Pop()  // use right-most dimension as divide
-		nowNode = NewProbNode(path.Slice(0, path.Len() - 1), fixedIndices, minDimension)
+		nowNode = NewProbNode(path.Slice(0, path.Len() - 1), fixedIndices, minDimension, false)
 		nowNode.children.Set(addrs[0].IndexAt(minDimension), pTree.finishNode)
 	} else {
 		remain.Del(minDimension)
-		nowNode = NewProbNode(path, fixedIndices, minDimension)
+		nowNode = NewProbNode(path, fixedIndices, minDimension, false)
 		childrenAddrs := make([][]utils.BitsArray, 16)
 		for _, addrBits := range addrs {
 			entry := addrBits.IndexAt(minDimension)
@@ -538,7 +568,6 @@ func (pTree *ProbTree) Init(ipStrArray []string) {
 	// all uni-cast IPv6 starts with 2
 	pTree.rootNode.children.Set(2, pTree.recInit(addrs, remain))
 	pTree.rootNode.nProbes = uint32(len(ipStrArray))
-	// do the finish check
 }
 
 func (pTree *ProbTree) PrintInfo() {
@@ -560,4 +589,29 @@ func (pTree *ProbTree) GetEstimation() float32 {
 
 func (pTree *ProbTree) Check() bool {
 	return pTree.rootNode.recCheck(32, pTree)
+}
+
+func (pTree *ProbTree) AddAlias(nodesOnPath []*ProbNode, isAlias bool, prefixLen uint8) {
+	nowNode := nodesOnPath[len(nodesOnPath) - 1]
+	parentNode := nodesOnPath[len(nodesOnPath) - 2]
+	if isAlias {
+		newIndices := nowNode.indices & (0xffffffff << (32 - prefixLen))
+		if newIndices == 0 {  // this node is all aliased
+			parentNode.children.Replace(nowNode, pTree.finishNode)
+			nodesOnPath = nodesOnPath[:len(nodesOnPath) - 1]
+		} else {
+			nowNode.divide = newIndices.Pop()
+			aliasEntry := nowNode.path.IndexAt(newIndices.Len())
+			nowNode.path = nowNode.path.Slice(0, newIndices.Len())
+			nowNode.indices = newIndices
+			nowNode.children.Clear()
+			nowNode.children.Set(aliasEntry, pTree.finishNode)
+			nowNode.underAPD = false
+		}
+	} else {
+		nowNode.underAPD = false
+		nowNode.mayBeAlias = false
+	}
+	pTree.finishCheckPath(nodesOnPath)
+	pTree.calculatePath(nodesOnPath)
 }

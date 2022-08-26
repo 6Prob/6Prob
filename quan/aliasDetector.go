@@ -9,11 +9,59 @@ import (
 	"IPv6/utils"
 )
 
+const (
+	maxInterv int64 = 3000
+	maxNLost uint8 = 1
+)
+
+type AliasStatus struct {
+	pfxStr string
+	pfxBits utils.BitsArray
+	nSent uint8
+	nRecv uint8
+	lastSent int64
+}
+
+func NewAliasStatus(pfxStr string) *AliasStatus {
+	_, pfx, _ := net.ParseCIDR(pfxStr)
+	return &AliasStatus{
+		pfxStr: pfxStr,
+		pfxBits: utils.Pfx2Bits(pfx)[0],
+		nSent: 0,
+		nRecv: 0,
+		lastSent: time.Now().UnixMilli(),
+	}
+}
+
+func (as *AliasStatus) getNext() string {
+	scanBits := as.pfxBits.Copy()
+	scanBits.Append(as.nSent)
+	scanBits.RandFill()
+	as.nSent ++
+	as.lastSent = time.Now().UnixMilli()
+	return scanBits.ToIPv6()
+}
+
+func (as *AliasStatus) recvNow() {
+	as.nRecv += 1
+}
+
+func (as *AliasStatus) allSent() bool {
+	return as.nSent == 16
+}
+
+func (as *AliasStatus) timeOut() bool {
+	return time.Now().UnixMilli() - as.lastSent > maxInterv
+}
+
+func (as *AliasStatus) cannotBeAlias() bool {
+	return as.nSent - as.nRecv > maxNLost
+}
+
 type SimpleAliasDetector struct {
 	inChan chan string
 	outPfxChan chan string
 	outResChan chan bool
-	resCounter sync.Map
 	ip2pfx     sync.Map
 	pp scanner.PingPool
 	cooldown time.Duration
@@ -31,73 +79,68 @@ func NewSimpleAliasDetector(bufSize int, localAddrStr string) *SimpleAliasDetect
 	}
 }
 
-func (sad *SimpleAliasDetector) CheckOne(nowPfxStr string) {
-	_, nowPfx, _ := net.ParseCIDR(nowPfxStr)
-	nowPfxBits := utils.Pfx2Bits(nowPfx)[0]
-	sad.resCounter.Store(nowPfxStr, false)
-	isAlias := true
-	ipArray := make([]string, 0)
-	nMiss := 0
-	for i := uint8(0); i < 16; i ++ {
-		scanBits := nowPfxBits.Copy()
-		scanBits.Append(i)
-		scanBits.RandFill()
-		scanIP := scanBits.ToIPv6()
-		ipArray = append(ipArray, scanIP)
-		sad.ip2pfx.Store(scanIP, nowPfxStr)
-		sad.pp.Add(scanIP)
-		active := false
-		for j := 0; j < 10; j ++ {
-			time.Sleep(sad.cooldown / 10)
-			if res, _ := sad.resCounter.Load(nowPfxStr); res == false {
-				continue
-			} else {
-				active = true
-				break
-			}
-		}
-		if active {
-			sad.resCounter.Store(nowPfxStr, false)
-		} else {
-			nMiss ++
-			if nMiss == 2 {
-				isAlias = false
-				break
-			}
-		}
-	}
-
-	// output
-	sad.outMutex.Lock()
-	sad.outPfxChan <- nowPfxStr
-	if isAlias {
-		sad.outResChan <- true
-	} else {
-		sad.outResChan <- false
-	}
-	sad.outMutex.Unlock()
-
-	// clear
-	for _, ip := range ipArray {
-		sad.ip2pfx.Delete(ip)
-	}
-	sad.resCounter.Delete(nowPfxStr)
-}
-
 func (sad *SimpleAliasDetector) Recv() {
 	for {
 		nowIP := sad.pp.Get()
-		nowPfxStr, _ := sad.ip2pfx.Load(nowIP)
-		sad.resCounter.Store(nowPfxStr, true)
+		nowInterface, ok := sad.ip2pfx.Load(nowIP)
+		if ok {
+			nowPfx := nowInterface.(*AliasStatus)
+			nowPfx.recvNow()
+			if nowPfx.allSent() {
+				sad.outMutex.Lock()
+				sad.outPfxChan <- nowPfx.pfxStr
+				sad.outResChan <- true
+				sad.outMutex.Unlock()
+			} else {
+				nextIP := nowPfx.getNext()
+				sad.ip2pfx.Store(nextIP, nowPfx)
+				sad.pp.Add(nextIP)
+			}
+			sad.ip2pfx.Delete(nowIP)
+		}
+	}
+}
+
+func (sad *SimpleAliasDetector) Clear() {
+	for {
+		ipArray := make([]string, 0)
+		pfxArray := make([]*AliasStatus, 0)
+		sad.ip2pfx.Range(func (key, value interface{}) bool {
+			ip := key.(string)
+			pfx := value.(*AliasStatus)
+			if pfx.timeOut() {
+				ipArray = append(ipArray, ip)
+				if pfx.cannotBeAlias() {
+					pfxArray = append(pfxArray, pfx)
+				} else {
+					nextIP := pfx.getNext()
+					sad.ip2pfx.Store(nextIP, pfx)
+					sad.pp.Add(nextIP)
+				}
+			}
+			return true
+		})
+		for _, ip := range ipArray {
+			sad.ip2pfx.Delete(ip)
+		}
+		for _, pfx := range pfxArray {
+			sad.outMutex.Lock()
+			sad.outPfxChan <- pfx.pfxStr
+			sad.outResChan <- false
+			sad.outMutex.Unlock()
+		}
 	}
 }
 
 func (sad *SimpleAliasDetector) Run() {
 	go sad.pp.Run()
 	go sad.Recv()
+	go sad.Clear()
 	for {
-		nowPfxStr := <- sad.inChan
-		go sad.CheckOne(nowPfxStr)
+		nowPfx := NewAliasStatus(<- sad.inChan)
+		nowIP := nowPfx.getNext()
+		sad.ip2pfx.Store(nowIP, nowPfx)
+		sad.pp.Add(nowIP)
 	}
 }
 
