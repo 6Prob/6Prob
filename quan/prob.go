@@ -12,13 +12,18 @@ const (
 	MaxEntropy16 float64 = 2.772588722239781  // log16
 )
 
-func f(x float32) float32 {
-	if x < 0.25 {
-		return 0.2 * x
-	} else if x < 0.75 {
-		return 1.8 * x - 0.4
+func CheckNProbes(nProbes uint32) bool {
+	/*
+     * Whenever nProbes == 100, 200, 400, 800, ..., perform alias check
+	 */
+	if nProbes % 100 != 0 {
+		return false
+	}
+	remain := nProbes / 100
+	if remain & (remain - 1) == 0 {
+		return true
 	} else {
-		return 0.2 * x + 0.8
+		return false
 	}
 }
 
@@ -198,7 +203,7 @@ type ProbNode struct {
 	children ProbChildren
 	path utils.BitsArray
 	indices utils.Indices32
-	mayBeAlias bool
+	checked bool
 	underAPD bool
 	mutex *sync.Mutex
 }
@@ -222,7 +227,7 @@ func NewProbNode(path utils.BitsArray, indices utils.Indices32, divide uint8, ma
 		},
 		path: path,
 		indices: indices,
-		mayBeAlias: mayBeAlias,
+		checked: false,
 		underAPD: false,
 		mutex: &sync.Mutex{},
 	}
@@ -359,7 +364,7 @@ func (pNode *ProbNode) recCheck(nDim int, pTree *ProbTree) bool {
 }
 
 func (pNode *ProbNode) AliasCheck() bool {
-	if pNode.nProbes >= 20 && pNode.nActive >= pNode.nProbes * 8 / 10 {
+	if CheckNProbes(pNode.nProbes) && pNode.nActive >= pNode.nProbes * 8 / 10 {
 		return true
 	} else {
 		return false
@@ -397,7 +402,7 @@ func (pTree *ProbTree) calculatePath(nodesOnPath []*ProbNode) {
 		node := nodesOnPath[i]
 		node.qCalculate(pTree)
 	}
-} 
+}
 
 func (pTree *ProbTree) AddActive(addr net.IP) {
 	/*
@@ -437,15 +442,21 @@ func (pTree *ProbTree) Generate() (string, []*ProbNode) {
 			remain = utils.Indices32(0xffffffff)
 			continue
 		}
-		if nowNode.mayBeAlias && nowNode.AliasCheck() {
-			prefixBits := utils.NilSlice()
-			for i := uint8(0); !remain.Has(i); i ++ {
-				prefixBits.Append(newAddr.IndexAt(i))
+		// if nowNode.mayBeAlias && nowNode.AliasCheck() {
+		if nowNode.AliasCheck() {
+			if nowNode.checked {
+				nowNode.checked = false
+			} else {
+				nowNode.checked = true
+				prefixBits := utils.NilSlice()
+				for i := uint8(0); !remain.Has(i); i ++ {
+					prefixBits.Append(newAddr.IndexAt(i))
+				}
+				nowNode.a = 0
+				nowNode.q = 0
+				pTree.calculatePath(nodesOnPath[:len(nodesOnPath) - 1])
+				return prefixBits.ToPrefix6(), nodesOnPath
 			}
-			nowNode.a = 0
-			nowNode.q = 0
-			pTree.calculatePath(nodesOnPath[:len(nodesOnPath) - 1])
-			return prefixBits.ToPrefix6(), nodesOnPath
 		}
 		// 1. fill the path
 		indexArray := nowNode.indices.GetAll()
@@ -610,7 +621,6 @@ func (pTree *ProbTree) AddAlias(nodesOnPath []*ProbNode, isAlias bool, prefixLen
 		}
 	} else {
 		nowNode.underAPD = false
-		nowNode.mayBeAlias = false
 	}
 	pTree.finishCheckPath(nodesOnPath)
 	pTree.calculatePath(nodesOnPath)

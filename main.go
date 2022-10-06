@@ -206,6 +206,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, outAliasFile string, nProc,
 	nProbe := 0
 	nMayBeAlias := 0
 	nAlias := 0
+	nUnderAPD := 0
 	detectedPfx := sync.Map{}
 	aliasDict := sync.Map{}
 	// aliasDict := make(map[string][][]*quan.ProbNode)
@@ -230,7 +231,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, outAliasFile string, nProc,
 			second %= 3600
 			minute := second / 60
 			second %= 60
-			fmt.Printf("\r[%02d:%02d:%02d] %d addresses generated. Now active ratio %.2f%%(%.2f%%). Now alias ratio %d/%d...", hour, minute, second, nProbe, activeRatio, pTree.GetEstimation(), nAlias, nMayBeAlias)
+			fmt.Printf("\r[%02d:%02d:%02d] %d addresses generated. Now active ratio %.2f%%(%.2f%%). Now alias ratio %d/%d. %d is now under APD...", hour, minute, second, nProbe, activeRatio, pTree.GetEstimation(), nAlias, nMayBeAlias, nUnderAPD)
 			// pTree.PrintInfo()
 			after := nProbe % 10000000
 			if after < before {
@@ -283,6 +284,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, outAliasFile string, nProc,
 			prefixLen, _ := strconv.Atoi(strings.Split(pfxStr, "/")[1])
 			paths, _ := aliasDict.Load(pfxStr)
 			aliasDict.Delete(pfxStr)
+			nUnderAPD --
 			for _, nodesOnPath := range paths.([][]*quan.ProbNode) {
 				pTree.AddAlias(nodesOnPath, isAlias, uint8(prefixLen))
 			}
@@ -325,6 +327,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, outAliasFile string, nProc,
 					} else {
 						paths, ok := aliasDict.Load(newAddrStr)
 						if !ok {
+							nUnderAPD ++
 							realtimeAPD.Add(newAddrStr)
 							nMayBeAlias ++
 							newPaths := make([][]*quan.ProbNode, 1)
