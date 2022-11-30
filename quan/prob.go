@@ -364,12 +364,11 @@ func (pNode *ProbNode) recCheck(nDim int, pTree *ProbTree) bool {
 }
 
 func (pNode *ProbNode) AliasCheck() bool {
-	// if CheckNProbes(pNode.nProbes) && pNode.nActive >= pNode.nProbes * 8 / 10 {
-	// 	return true
-	// } else {
-	// 	return false
-	// }
-	return false
+	if CheckNProbes(pNode.nProbes) && pNode.nActive >= pNode.nProbes * 8 / 10 {
+		return true
+	} else {
+		return false
+	}
 }
 
 func (pTree *ProbTree) finishCheckPath(nodesOnPath []*ProbNode) []*ProbNode {
