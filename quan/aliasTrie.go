@@ -63,6 +63,22 @@ func (at *AliasTestTree) IsAlias(addr net.IP) bool {
 	return false
 }
 
+func (at *AliasTestTree) IsAliasPfx(pfx *net.IPNet) bool {
+	nowNode := at.rootNode
+	pfxBits := utils.Pfx2Bits(pfx)[0]
+	for i := uint8(0); i < pfxBits.Len(); i ++ {
+		val := pfxBits.IndexAt(i)
+		if nowNode.children[val] == nil {
+			return false
+		} else if nowNode.children[val] == at.finishNode {
+			return true
+		} else {
+			nowNode = nowNode.children[val]
+		}
+	}
+	return false
+}
+
 type AliasCompChildren struct {
 	indices utils.Indices
 	children []*AliasNode
@@ -476,6 +492,27 @@ func (aTrie *AliasTrie) AddPfx(pfx *net.IPNet, recur bool) {
 			nodeArray = nodeArray[1:]
 			nowNode.mayBeAlias = true
 			nodeArray = append(nodeArray, nowNode.children.RangeValid()...)
+		}
+	}
+}
+
+func (aTrie *AliasTrie) AddPfxOnce(pfx *net.IPNet) {
+	if pfx == nil {
+		return
+	}
+	pfxBits := utils.Pfx2Bits(pfx)[0]
+	nowNode := aTrie.rootNode
+	for i, val := range pfxBits.Range() {
+		if nowNode.children.IndexAt(val) == nil {
+			newChild := NewAliasNode(utils.NilSlice())
+			nowNode.children.Set(val, newChild)
+			if uint8(i) != pfxBits.Len() - 1 {
+				newChild.mayBeAlias = false
+			}
+		}
+		nowNode = nowNode.children.IndexAt(val)
+		if nowNode.mayBeAlias {
+			break
 		}
 	}
 }

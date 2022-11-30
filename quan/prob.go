@@ -14,12 +14,12 @@ const (
 
 func CheckNProbes(nProbes uint32) bool {
 	/*
-     * Whenever nProbes == 100, 200, 400, 800, ..., perform alias check
+     * Whenever nProbes == 20, 40, 80, 160, 320 ..., perform alias check
 	 */
-	if nProbes % 100 != 0 {
+	if nProbes % 20 != 0 {
 		return false
 	}
-	remain := nProbes / 100
+	remain := nProbes / 20
 	if remain & (remain - 1) == 0 {
 		return true
 	} else {
@@ -304,9 +304,9 @@ func (pNode *ProbNode) pCalculate(pTree *ProbTree) []float32 {
 				prob[i] = 1
 			}
 		} else {
-			prob[i] = float32(1 / (1 + math.Exp(-fk * math.Tan(math.Pi * float64(child.q / maxQ - 0.5)))))
+			// prob[i] = float32(1 / (1 + math.Exp(-fk * math.Tan(math.Pi * float64(child.q / maxQ - 0.5)))))
 			// prob[i] = child.q
-			// prob[i] = float32(math.Exp(10 * float64(child.q))) - 1
+			prob[i] = float32(math.Exp(10 * float64(child.q))) - 1
 		}
 		totP += prob[i]
 	}
@@ -364,11 +364,12 @@ func (pNode *ProbNode) recCheck(nDim int, pTree *ProbTree) bool {
 }
 
 func (pNode *ProbNode) AliasCheck() bool {
-	if CheckNProbes(pNode.nProbes) && pNode.nActive >= pNode.nProbes * 8 / 10 {
-		return true
-	} else {
-		return false
-	}
+	// if CheckNProbes(pNode.nProbes) && pNode.nActive >= pNode.nProbes * 8 / 10 {
+	// 	return true
+	// } else {
+	// 	return false
+	// }
+	return false
 }
 
 func (pTree *ProbTree) finishCheckPath(nodesOnPath []*ProbNode) []*ProbNode {
@@ -604,8 +605,8 @@ func (pTree *ProbTree) Check() bool {
 
 func (pTree *ProbTree) AddAlias(nodesOnPath []*ProbNode, isAlias bool, prefixLen uint8) {
 	nowNode := nodesOnPath[len(nodesOnPath) - 1]
-	parentNode := nodesOnPath[len(nodesOnPath) - 2]
 	if isAlias {
+		parentNode := nodesOnPath[len(nodesOnPath) - 2]
 		newIndices := nowNode.indices & (0xffffffff << (32 - prefixLen))
 		if newIndices == 0 {  // this node is all aliased
 			parentNode.children.Replace(nowNode, pTree.finishNode)
@@ -617,11 +618,9 @@ func (pTree *ProbTree) AddAlias(nodesOnPath []*ProbNode, isAlias bool, prefixLen
 			nowNode.indices = newIndices
 			nowNode.children.Clear()
 			nowNode.children.Set(aliasEntry, pTree.finishNode)
-			nowNode.underAPD = false
 		}
-	} else {
-		nowNode.underAPD = false
 	}
+	nowNode.underAPD = false
 	pTree.finishCheckPath(nodesOnPath)
 	pTree.calculatePath(nodesOnPath)
 }
