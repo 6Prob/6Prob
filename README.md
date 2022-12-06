@@ -1,9 +1,9 @@
-# 6Prob: Efficient Active IPv6 Address Discovery via DHC-based Probabilistic Generation Model
+# 6Prob: Efficient and Dealiased Discovery of Active IPv6 Addresses
 
 ### Abstract
-With the rapid growth of IPv6 deployment, active IPv6 address discovery has become the foundation of Internet security and measurement research. Unfortunately, the vast IPv6 address space makes brute force scanning used in IPv4 impractical. Today, a common paradigm for active IPv6 address discovery is first to leverage the IPv6 Hitlist, a collection of known active IPv6 addresses, as a seed to generate more candidate IPv6 addresses and then verify their liveness. However, prior work is weak at Internet-wide active IPv6 address discovery due to their poor robustness in detecting alias prefixes, poor scalability with the growing IPv6 Hitlist, and low quality of the generated candidate targets.
+With the rapid growth of IPv6 deployment, active IPv6 address discovery has become the foundation of Internet security and measurement research. Unfortunately, the vast IPv6 address space makes brute force scanning used in IPv4 impractical. Today, a common paradigm for active IPv6 address discovery is first to leverage IPv6 hitlists, a collection of known active IPv6 addresses, as seed addresses to generate more candidate IPv6 addresses and then verify their activeness. However, prior work fails to achieve high performance with acceptable overhead, and is also weak in detecting aliased prefixes. 
 
-In this paper, we propose 6Prob, a probabilistic generation model combined with compressed Divisive Hierarchical Clustering (DHC) data structure to discover active IPv6 addresses on the global Internet efficiently. By abstracting the address generation problem as a process of recursively selecting sub-prefixes based on probability, 6Prob can achieve both high quality and coverage when generating candidate addresses. Besides, we design a cool-down alias prefix detection scheme to alleviate the saturation scanning problem in detecting alias prefixes. And we further use the detected alias prefixes to improve the quality of the seed addresses since alias prefixes can mislead the probabilistic generation model to generate alias addresses. The experimental results show that compared to prior work, 6Prob not only improves the quality of generated addresses by up to 144% but also significantly reduces time cost and memory overhead. Based on these critical improvements, we believe that 6Prob is ready for efficient Internet-wide active IPv6 address discovery.
+In this paper, we propose 6Prob, a probabilistic generation model combined with tree-based data structure to discover active IPv6 addresses on the global Internet efficiently. By abstracting the address generation problem as a process of recursively selecting sub-prefixes based on probability, 6Prob can achieve both high performance and low overhead when generating candidate addresses. Besides, we design a cool-down aliased prefix detection (APD) scheme to alleviate the saturation scanning problem in detecting aliased prefixes. Further, we use the detected aliased prefixes to improve the quality of the seed addresses since aliased prefixes can mislead the probabilistic generation model. The experimental results show that compared to prior work, 6Prob can generate 81.4% more active addresses with significantly lower memory overhead.  Moreover, we perform measurements on SSH and TLS in IPv6 to prove 6Prob's ability to support IPv6 measurement and to reveal the latest image of IPv6 security.
 
 ### Compile
 go version go1.17.5
@@ -44,19 +44,19 @@ go run main.go -h
 ```
 6prob -module=filAlias -input=<input file> -output=<output file> -alias=<alias file>
 ```
-> Module `filAlias` is used to filter addresses in the input file with alias prefixes in the alias file and output results to the output file.
+> Module `filAlias` is used to filter addresses in the input file with aliased prefixes in the alias file and output results to the output file.
 
 ```
 6prob -module=gen -input=<input file> -output=<output file> -alias=<alias file> -budget=<# generated addresses> -out-alias=<alias output file> [-source-ip=<source IP> -n-proc=<# processes for generating and updating> -n-scan-proc=<# scan processes>]
 ```
-> Module `gen` uses 6Prob model to generate new addresses based on addresses in the input file. Alias file is used to prevent model generating alias addresses. Budget is the number of generated addresses you want.
+> Module `gen` uses 6Prob model to generate new addresses based on addresses in the input file. Alias file is used to prevent model generating alias addresses. Budget is the number of generated addresses you want. Alias output file is used to store the aliased prefixes detected by the online cool-down APD.
 
-> 6Prob need input file (often active addresses in the IPv6 Hitlist) as heuristics. During the generation, it avoids generating alias addresses by filtering generated addresses by alias file and performing Real-time APD. The newly-detected alias prefixes from Real-time APD is exported to alias output file.
+> 6Prob need input file (often active addresses in the IPv6 Hitlist) as heuristics. During the generation, it avoids generating aliased addresses by filtering generated addresses by aliased file and performing online cool-down APD. The newly-detected aliased prefixes from the online cool-down APD is exported to alias output file.
 
 ```
 6prob -module=detAlias -input=<input file> -output=<output file> [-source-ip=<source IP> -n-scan-proc=<# scan processes>]
 ```
-> Module `detAlias` uses cool-down detection for alias prefixes to detect alias prefixes in the input file and output them to the output file.
+> Module `detAlias` uses cool-down detection for aliased prefixes to detect aliased prefixes in the input file and output them to the output file.
 
 ```
 6prob -module=dealiasScan -input=<input file> -output=<output file> -alias=<alias file> [-source-ip=<source IP> -n-scan-proc=<# scan processes>]
@@ -76,7 +76,7 @@ go run main.go -h
 ```
 6prob -module=genAlias -input=<input file> -output=<output file> -thres=<threshold distance>
 ```
-> Module `genAlias` generates new alias prefixes based on ones in the input file with the threshold distance.
+> Module `genAlias` generates new aliased prefixes based on ones in the input file with the threshold distance.
 
 
 
