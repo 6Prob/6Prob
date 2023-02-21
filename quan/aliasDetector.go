@@ -63,17 +63,17 @@ type SimpleAliasDetector struct {
 	outPfxChan chan string
 	outResChan chan bool
 	ip2pfx     sync.Map
-	pp scanner.PingPool
+	sp scanner.ScanPool
 	cooldown time.Duration
 	outMutex  sync.Mutex
 }
 
-func NewSimpleAliasDetector(bufSize int, localAddrStr string) *SimpleAliasDetector {
+func NewSimpleAliasDetector(bufSize int, localAddrStr, protos string) *SimpleAliasDetector {
 	return &SimpleAliasDetector{
 		inChan: make(chan string, bufSize),
 		outPfxChan: make(chan string, bufSize),
 		outResChan: make(chan bool, bufSize),
-		pp: *scanner.NewPingPool(bufSize, 8, localAddrStr),
+		sp: *scanner.NewScanPool(protos, localAddrStr, bufSize, 1000000),
 		cooldown: time.Second,
 		outMutex: sync.Mutex{},
 	}
@@ -81,7 +81,7 @@ func NewSimpleAliasDetector(bufSize int, localAddrStr string) *SimpleAliasDetect
 
 func (sad *SimpleAliasDetector) Recv() {
 	for {
-		nowIP := sad.pp.Get()
+		nowIP := sad.sp.Get()
 		nowInterface, ok := sad.ip2pfx.Load(nowIP)
 		if ok {
 			nowPfx := nowInterface.(*AliasStatus)
@@ -94,7 +94,7 @@ func (sad *SimpleAliasDetector) Recv() {
 			} else {
 				nextIP := nowPfx.getNext()
 				sad.ip2pfx.Store(nextIP, nowPfx)
-				sad.pp.Add(nextIP)
+				sad.sp.Add(nextIP)
 			}
 			sad.ip2pfx.Delete(nowIP)
 		}
@@ -115,7 +115,7 @@ func (sad *SimpleAliasDetector) Clear() {
 				} else {
 					nextIP := pfx.getNext()
 					sad.ip2pfx.Store(nextIP, pfx)
-					sad.pp.Add(nextIP)
+					sad.sp.Add(nextIP)
 				}
 			}
 			return true
@@ -133,14 +133,13 @@ func (sad *SimpleAliasDetector) Clear() {
 }
 
 func (sad *SimpleAliasDetector) Run() {
-	go sad.pp.Run()
 	go sad.Recv()
 	go sad.Clear()
 	for {
 		nowPfx := NewAliasStatus(<- sad.inChan)
 		nowIP := nowPfx.getNext()
 		sad.ip2pfx.Store(nowIP, nowPfx)
-		sad.pp.Add(nowIP)
+		sad.sp.Add(nowIP)
 	}
 }
 

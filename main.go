@@ -35,6 +35,8 @@ var (
 	nScanProc = flag.Int("n-scan-proc", 8, "# thread used for sending ICMP request message")
 	dealias = flag.Bool("dealias", true, "whether dealias during 6Prob generation")
 	thres = flag.Int("thres", 4, "threshold between clusters / threshold of get prefixes from seed addresses")
+	protos = flag.String("protos", "icmp,tcp80,tcp443", "The protocol used for scanning, e.g. ICMPv6 or TCP80")
+	pps = flag.Int("pps", 500000, "The maximum speed of packets per second.")
 )
 
 func std(inputFile, outputFile string) {
@@ -59,7 +61,10 @@ func std(inputFile, outputFile string) {
 	utils.SaveAddr6ToFS(outputFile, outStrArray)
 }
 
-func scan(sourceIP, inputFile, outputFile string, nScanProc int) {
+func scan(sourceIP, inputFile, outputFile string, nScanProc, pps int, protos string) {
+	// Initialize scanner
+	sp := scanner.NewScanPool(protos, sourceIP, 1000000, pps)
+	
 	// scan all addresses in inputFile like zmap
 	fProbes, err := os.Open(inputFile)
 	if err != nil {
@@ -69,15 +74,13 @@ func scan(sourceIP, inputFile, outputFile string, nScanProc int) {
 	addrArray := utils.ReadLineAddr6FromFS(inputFile)
 	nProbeLines := len(addrArray)
 	fmt.Printf("Start scanning %d addresses...\n", nProbeLines)
-	pp := scanner.NewPingPool(100000, nScanProc, sourceIP)
 	nActive := 0
 	writeStop := false
-	go pp.Run()
 	// write to PingPool
 	go func() {
 		startTime := time.Now().Unix()
 		for i, addrStr := range addrArray {
-			if i % 10 == 0 || i == nProbeLines - 1 {
+			if i % 100000 == 0 || i == nProbeLines - 1 {
 				// statistics
 				completeRatio := float64(i) / float64(nProbeLines)
 				activeRatio := float64(nActive) / float64(i)
@@ -94,7 +97,7 @@ func scan(sourceIP, inputFile, outputFile string, nScanProc int) {
 				remainSecond %= 60
 				fmt.Printf("\r[%02d:%02d:%02d] Probe: Sending addresses %.2f%%; hitrate: %.2f%%; %02d:%02d:%02d remaining...", hour, minute, second, completeRatio * 100, activeRatio * 100, remainHour, remainMinute, remainSecond)
 			}
-			pp.Add(addrStr)
+			sp.Add(addrStr)
 		}
 		fmt.Println("\nAll probes are sent! Waiting final responses for 2 seconds...")
 		writeStop = true
@@ -105,10 +108,10 @@ func scan(sourceIP, inputFile, outputFile string, nScanProc int) {
 	for {
 		if writeStop && !stopCheck {
 			stopCheck = true
-			time.Sleep(2 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		time.Sleep(time.Second)
-		outStrArray := pp.GetAll()
+		outStrArray := sp.GetAll()
 		if len(outStrArray) == 0 {
 			if stopCheck {
 				break
@@ -143,6 +146,10 @@ func _sort(inputFile, outputFile string) {
 }
 
 func filAlias(inputFile, aliasFile, outputFile string) {
+	if inputFile == outputFile {
+		panic("The input file cannot be the same as the output file.")
+	}
+	os.Remove(outputFile)
 	fmt.Println("Loading alias trie...")
 	aliasTrie := quan.NewAliasTestTree()
 	strAliasArray := utils.ReadAliasFromFS(aliasFile)
@@ -150,24 +157,31 @@ func filAlias(inputFile, aliasFile, outputFile string) {
 		_, pfx, _ := net.ParseCIDR(strAlias)
 		aliasTrie.AddAlias(pfx)
 	}
-	fmt.Println("Loading addresses to memory...")
-	addrStrArray := utils.ReadLineAddr6FromFS(inputFile)
-	nAddrLines := len(addrStrArray)
-	var deaStrArray []string
-	for i, addrStr := range addrStrArray {
-		if i % 100000 == 0 {
-			fmt.Printf("\r%.2f%% checking...", float64(i + 1) / float64(nAddrLines) * 100)
+	fInput, err := os.Open(inputFile)
+	if err != nil {
+		panic(err)
+	}
+	defer fInput.Close()
+	nSeedLine := utils.GetSeedFileNLines(fInput)
+	addrArray := make([]string, 0)
+	for i := int64(0); i < nSeedLine; i ++ {
+		if i % 1000000 == 0 {
+			fmt.Printf("\r%.2f%% checking...", float64(i + 1) / float64(nSeedLine) * 100)
+			if len(addrArray) != 0 {
+				utils.AppendAddr6ToFS(outputFile, addrArray)
+				addrArray = make([]string, 0)
+			}
 		}
+		addrStr := utils.ReadAddr6FromFSAt(fInput, i)
 		addr := net.ParseIP(addrStr)
 		if !aliasTrie.IsAlias(addr) {
-			deaStrArray = append(deaStrArray, addrStr)
+			addrArray = append(addrArray, addrStr)
 		}
 	}
-	fmt.Printf("Writing %d dealiased results to FS..\n", len(deaStrArray))
-	utils.SaveAddr6ToFS(outputFile, deaStrArray)
+	utils.AppendAddr6ToFS(outputFile, addrArray)
 }
 
-func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile string, nProc, nScanProc, budget int, dealias bool) {
+func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile, protos string, nProc, nScanProc, budget, pps int, dealias bool) {
 	// genInterval := 1000000 / rate
 	startTime := time.Now().Unix()
 	fmt.Printf("Seed is %d\n", startTime)
@@ -194,14 +208,9 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 		aliasTree.AddAlias(pfx)
 	}
 
-	// init alias detector
-	aliasDet := quan.NewSimpleAliasDetector(100, sourceIP)
-	go aliasDet.Run()
-
 	// start probing goroutines
-	pp := scanner.NewPingPool(100000000, nScanProc, sourceIP)
-	realtimeAPD := quan.NewSimpleAliasDetector(100000, sourceIP)
-	go pp.Run()
+	sp := scanner.NewScanPool(protos, sourceIP, 1000000, pps)
+	realtimeAPD := quan.NewSimpleAliasDetector(100000, sourceIP, protos)
 	go realtimeAPD.Run()
 	nActive := 0
 	nProbe := 0
@@ -221,7 +230,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 		for {
 			if writeStop && !stopCheck {
 				stopCheck = true
-				time.Sleep(2 * time.Second)
+				time.Sleep(5 * time.Second)
 			}
 			time.Sleep(time.Second)
 			activeRatio := float64(nActive) / float64(nProbe) * 100
@@ -258,16 +267,16 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 	fmt.Println("Done.")
 	if activeFile == "" {
 		for _, ipStr := range ipStrArray {
-			pp.Add(ipStr)
+			sp.Add(ipStr)
 		}
 	}
 	nProbe += len(ipStrArray)
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// initialize the trie with pre-scan addresses
 	if activeFile == "" {
-		for pp.LenOutChan() != 0 {
-			addrStr := pp.Get()
+		for sp.LenOutChan() != 0 {
+			addrStr := sp.Get()
 			nActive ++
 			pTree.AddActive(net.ParseIP(addrStr))
 			outChan <- addrStr
@@ -309,7 +318,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 	for i := 0; i < nProc; i ++ {
 		go func(){
 			for {
-				outStr := pp.Get()
+				outStr := sp.Get()
 				nActive ++
 				pTree.AddActive(net.ParseIP(outStr))
 				outChan <- outStr
@@ -318,7 +327,6 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 	}
 
 	// start probing system
-	go pp.Run()
 	for i := 0; i < nProc; i ++ {
 		go func(){
 			for {
@@ -344,7 +352,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 						}
 					}
 				} else if !aliasTree.IsAlias(net.ParseIP(newAddrStr)) {
-					pp.Add(newAddrStr)
+					sp.Add(newAddrStr)
 					nProbe ++
 					// endTime := time.Now().UnixMicro()
 					// usedTime := endTime - startTime
@@ -367,7 +375,7 @@ func gen(sourceIP, inputFile, outputFile, aliasFile, activeFile, outAliasFile st
 	}
 }
 
-func detAlias(sourceIP, inputFile, outputFile string, nScanProc int) {
+func detAlias(sourceIP, inputFile, outputFile, protos string, nScanProc, pps int) {
 	nowTime := time.Now().UnixNano()
 	fmt.Printf("Seed is %d\n", nowTime)
 	rand.Seed(nowTime)
@@ -392,11 +400,10 @@ func detAlias(sourceIP, inputFile, outputFile string, nScanProc int) {
 	fmt.Println("Done.")
 
 	// start probing system
-	pp := scanner.NewPingPool(100000, nScanProc, sourceIP)
+	sp := scanner.NewScanPool(protos, sourceIP, 1000000, pps)
 	writeStop := false
 	nProbes := 0
 	pfxSet := make(map[string]bool)
-	go pp.Run()
 	go func() {
 		for {
 			newAddrStr, pfxStr := aTrie.GenerateTopDown()
@@ -406,13 +413,13 @@ func detAlias(sourceIP, inputFile, outputFile string, nScanProc int) {
 				writeStop = true
 				break
 			}
-			pp.Add(newAddrStr)
+			sp.Add(newAddrStr)
 		}
 		fmt.Println(len(pfxSet), len(candPfxArray))
 	}()
 	go func() {
 		for {
-			outStr := pp.Get()
+			outStr := sp.Get()
 			aTrie.AddActiveTopDown(net.ParseIP(outStr))
 		}
 	}()
@@ -431,7 +438,7 @@ func detAlias(sourceIP, inputFile, outputFile string, nScanProc int) {
 	fmt.Printf("#alias prefixes: %d; #alias addresses: %.2E.\n", len(pfxArray), aTrie.CountNAddr(false))
 }
 
-func dealiasScan(sourceIP, inputFile, outputFile, aliasFile string, nScanProc int) {
+func dealiasScan(sourceIP, inputFile, outputFile, aliasFile, protos string, nScanProc, pps int) {
 	// dealiasScan will ignore addresses in alias region
 	// init alias tree
 	aliasTrie := quan.NewAliasTestTree()
@@ -450,10 +457,9 @@ func dealiasScan(sourceIP, inputFile, outputFile, aliasFile string, nScanProc in
 	addrArray := utils.ReadLineAddr6FromFS(inputFile)
 	nProbeLines := len(addrArray)
 	fmt.Printf("Start scanning %d addresses...\n", nProbeLines)
-	pp := scanner.NewPingPool(100000, nScanProc, sourceIP)
+	sp := scanner.NewScanPool(protos, sourceIP, 1000000, pps)
 	nActive := 0
 	writeStop := false
-	go pp.Run()
 	// write to PingPool
 	go func() {
 		startTime := time.Now().Unix()
@@ -476,7 +482,7 @@ func dealiasScan(sourceIP, inputFile, outputFile, aliasFile string, nScanProc in
 				fmt.Printf("\r[%02d:%02d:%02d] Probe: Sending addresses %.2f%%; hitrate: %.2f%%; %02d:%02d:%02d remaining...", hour, minute, second, completeRatio * 100, activeRatio * 100, remainHour, remainMinute, remainSecond)
 			}
 			if !aliasTrie.IsAlias(net.ParseIP(addrStr)) {
-				pp.Add(addrStr)
+				sp.Add(addrStr)
 			}
 		}
 		fmt.Println("\nAll probes are sent! Waiting final responses for 2 seconds...")
@@ -489,10 +495,10 @@ func dealiasScan(sourceIP, inputFile, outputFile, aliasFile string, nScanProc in
 	for {
 		if writeStop && !stopCheck {
 			stopCheck = true
-			time.Sleep(2 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		time.Sleep(time.Second)
-		outStrArray := pp.GetAll()
+		outStrArray := sp.GetAll()
 		if len(outStrArray) == 0 {
 			if stopCheck {
 				break
@@ -506,7 +512,7 @@ func dealiasScan(sourceIP, inputFile, outputFile, aliasFile string, nScanProc in
 	}
 }
 
-func gen6(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, budget int) {
+func gen6(sourceIP, inputFile, outputFile, aliasFile, protos string, nProc, nScanProc, budget, pps int) {
 	startTime := time.Now().Unix()
 	fmt.Printf("Seed is %d\n", startTime)
 	rand.Seed(startTime)
@@ -531,8 +537,7 @@ func gen6(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, b
 	probeStrArray := genAlg.GrowClusters(budget, nProc)
 
 	// probe new addresses
-	pp := scanner.NewPingPool(100000000, nScanProc, sourceIP)
-	go pp.Run()
+	sp := scanner.NewScanPool(protos, sourceIP, 1000000, pps)
 
 	writeStop := false
 	stopCheck := false
@@ -540,7 +545,7 @@ func gen6(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, b
 	nActive := 0
 	go func() {
 		for _, probeStr := range probeStrArray {
-			pp.Add(probeStr)
+			sp.Add(probeStr)
 			nProbe ++
 		}
 		writeStop = true
@@ -560,12 +565,12 @@ func gen6(sourceIP, inputFile, outputFile, aliasFile string, nProc, nScanProc, b
 		second %= 60
 		fmt.Printf("\r[%02d:%02d:%02d] %d addresses generated. Now active ratio %.2f %%...", hour, minute, second, nProbe, activeRatio)
 		var pendingAddrs []string
-		if pp.LenOutChan() == 0 && stopCheck {
+		if sp.LenOutChan() == 0 && stopCheck {
 			break
 		}
-		if pp.LenOutChan() != 0 {
-			for i := 0; i < pp.LenOutChan(); i ++ {
-				pendingAddrs = append(pendingAddrs, pp.Get())
+		if sp.LenOutChan() != 0 {
+			for i := 0; i < sp.LenOutChan(); i ++ {
+				pendingAddrs = append(pendingAddrs, sp.Get())
 			}
 			utils.AppendAddr6ToFS(outputFile, pendingAddrs)
 		}
@@ -663,7 +668,7 @@ func main() {
 	case "std":
 		std(*inputFile, *outputFile)
 	case "scan":
-		scan(*sourceIP, *inputFile, *outputFile, *nScanProc)
+		scan(*sourceIP, *inputFile, *outputFile, *nScanProc, *pps, *protos)
 	case "shuffle":
 		shuffle(*inputFile, *outputFile)
 	case "sort":
@@ -671,13 +676,13 @@ func main() {
 	case "filAlias":
 		filAlias(*inputFile, *aliasFile, *outputFile)
 	case "gen":
-		gen(*sourceIP, *inputFile, *outputFile, *aliasFile, *activeFile, *outAliasFile, *nProc, *nScanProc, *budget, *dealias)
+		gen(*sourceIP, *inputFile, *outputFile, *aliasFile, *activeFile, *outAliasFile, *protos, *nProc, *nScanProc, *budget, *pps, *dealias)
 	case "detAlias":
-		detAlias(*sourceIP, *inputFile, *outputFile, *nScanProc)
+		detAlias(*sourceIP, *inputFile, *outputFile, *protos, *nScanProc, *pps)
 	case "dealiasScan":
-		dealiasScan(*sourceIP, *inputFile, *outputFile, *aliasFile, *nScanProc)
+		dealiasScan(*sourceIP, *inputFile, *outputFile, *aliasFile, *protos, *nScanProc, *pps)
 	case "6gen":
-		gen6(*sourceIP, *inputFile, *outputFile, *aliasFile, *nProc, *nScanProc, *budget)
+		gen6(*sourceIP, *inputFile, *outputFile, *aliasFile, *protos, *nProc, *nScanProc, *budget, *pps)
 	case "getPfx":
 		getPfx(*inputFile, *outputFile, *thres)
 	case "genAlias":

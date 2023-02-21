@@ -30,7 +30,6 @@ func NewPingPool(bufSize, tMax int, localAddrStr string) *PingPool {
 		return nil
 	}
 	conn, err := net.ListenIP("ip6:ipv6-icmp", localAddr)
-	// conn.SetReadBuffer(1024 * 1024 * 1024)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -45,15 +44,6 @@ func NewPingPool(bufSize, tMax int, localAddrStr string) *PingPool {
 	msg[5] = 0  // id[1]
 	msg[6] = 0  // id[2]
 	msg[7] = 0  // id[3]
-	
-	/*
-	bufChan := make([]chan []byte, tMax)
-	addrChan := make([]chan net.Addr, tMax)
-	for i := 0; i < tMax; i ++ {
-		bufChan[i] = make(chan []byte, bufSize)
-		addrChan[i] = make(chan net.Addr, bufSize)
-	}
-	*/
 	
 	return &PingPool{
 		inChan:   make(chan string, bufSize),
@@ -77,7 +67,7 @@ func (pp *PingPool) clear() {
 		nowTime := time.Now().UnixNano()
 		var delArray []string
 		pp.addr2Time.Range(func(key, value interface{}) bool {
-			if nowTime - value.(int64) > int64(5 * time.Second) {
+			if nowTime - value.(int64) > int64(20 * time.Second) {
 				delArray = append(delArray, key.(string))
 			}
 			return true
